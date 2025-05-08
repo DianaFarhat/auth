@@ -1,6 +1,6 @@
 const express= require('express')
 const router=express.Router();
-const {signup,login,logout,googleLogin,loginWithGoogle, updatePassword, getCurrentUserProfile, updateCurrentUserProfile, deleteAccount } = require('../controllers/userController');
+const {signup,login,logout,refreshToken, updatePassword, getCurrentUserProfile, updateCurrentUserProfile, deleteAccount } = require('../controllers/userController');
 const {authenticate}= require('../middlewares/authMiddleware')
 
 // User Authentication Routes

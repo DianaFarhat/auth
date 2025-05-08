@@ -20,9 +20,15 @@ const accessToken = signAccessToken(user._id);
 const refreshToken = signRefreshToken(user._id);
 
 // 🔒 Store refresh token in Redis
-await redisClient.set(user._id.toString(), refreshToken, {
-    EX: 7 * 24 * 60 * 60, // optional: auto-expire after 7 days
-});
+const key = `refreshTokens:${user._id}`;
+const isNew = !(await redisClient.exists(key));
+
+await redisClient.lPush(key, refreshToken);
+if (isNew) {
+  await redisClient.expire(key, 7 * 24 * 60 * 60); // set expiry only once
+}
+
+
 
 // 🍪 Set refresh token in secure httpOnly cookie
 res.cookie('refreshToken', refreshToken, {
@@ -168,26 +174,35 @@ exports.logout = async (req, res) => {
       res.status(500).json({ message: "Logout failed" });
     }
 };
- 
+
 exports.refreshToken = async (req, res) => {
     const token = req.cookies?.refreshToken;
-    if (!token) return res.status(401).json({ message: "No refresh token provided." });
+    if (!token) {
+      return res.status(401).json({ message: "No refresh token provided." });
+    }
   
     try {
+      // 1️⃣ Verify the refresh token
       const decoded = jwt.verify(token, process.env.JWT_REFRESH_TOKEN);
-      const storedToken = await redisClient.get(decoded.id);
+      const redisKey = `refreshTokens:${decoded.id}`;
   
-      if (!storedToken || storedToken !== token) {
-        return res.status(403).json({ message: "Invalid refresh token." });
+      // 2️⃣ Get the list of valid tokens for this user
+      const tokens = await redisClient.lRange(redisKey, 0, -1); // fetch all tokens
+  
+      // 3️⃣ Check if the current token is in the list
+      if (!tokens.includes(token)) {
+        return res.status(403).json({ message: "Invalid or expired refresh token." });
       }
   
+      // 4️⃣ Optionally: rotate the refresh token (invalidate old, issue new)
       const newAccessToken = signAccessToken(decoded.id);
       return res.status(200).json({ accessToken: newAccessToken });
+  
     } catch (err) {
       console.error("Refresh error:", err);
       return res.status(401).json({ message: "Token refresh failed." });
     }
-};
+  };
   
 
 
