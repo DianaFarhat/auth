@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 
 // Load environment variables (assumes .env is in the backend folder)
-dotenv.config({ path: './.env' });
+dotenv.config();
+
 
 mongoose.set('strictQuery', true);
 
