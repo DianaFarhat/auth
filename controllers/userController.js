@@ -3,33 +3,49 @@ const validator = require('validator');
 const jwt =require('jsonwebtoken')
 const {promisify}=require('util')
 const env= require('dotenv');
+const redisClient = require('../config/redisClient'); // add this
 
 
-const signToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_ACCESS_TOKEN, {
-        expiresIn: process.env.JWT_EXPIRES_IN,
-    });
+
+const signAccessToken = (id) => {
+    return jwt.sign({ id }, process.env.JWT_ACCESS_TOKEN, { expiresIn: '15m' });
+  };
+  
+const signRefreshToken = (id) => {
+return jwt.sign({ id }, process.env.JWT_REFRESH_TOKEN, { expiresIn: '7d' });
 };
 
-const createSendToken = (user, statusCode, res) => {
-    const token = signToken(user._id); // use helper
-  
-    res.status(statusCode).json({
-      status: "success",
-      token: `Bearer ${token}`, // optional to prefix here or later
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email
-          // Do not include password
-        }
-      }
-    });
-  
-    return token;
-};
+const createSendToken = async (user, statusCode, res) => {
+const accessToken = signAccessToken(user._id);
+const refreshToken = signRefreshToken(user._id);
 
+// 🔒 Store refresh token in Redis
+await redisClient.set(user._id.toString(), refreshToken, {
+    EX: 7 * 24 * 60 * 60, // optional: auto-expire after 7 days
+});
+
+// 🍪 Set refresh token in secure httpOnly cookie
+res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'Strict',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+});
+
+res.status(statusCode).json({
+    status: "success",
+    token: `Bearer ${accessToken}`,
+    data: {
+    user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+    }
+    }
+});
+
+return accessToken;
+};
 
 
 exports.signup = async (req, res) => {
@@ -90,7 +106,7 @@ exports.signup = async (req, res) => {
 
     // Send response with token
     //signing up and logging in the user
-    createSendToken(newUser, 201, res);
+    await createSendToken(user, 200, res); // make it async
     } catch (err) {
     // Handle validation errors
     if (err.name === "ValidationError") {
@@ -122,7 +138,7 @@ exports.login= async(req,res)=>{
 
         //if login is successfull , set user's token
 
-        createSendToken(user, 200, res)
+        await createSendToken(user, 200, res)
         console.log("lOGGED IN")
 
 
@@ -134,15 +150,45 @@ exports.login= async(req,res)=>{
 
 
 exports.logout = async (req, res) => {
-    res.cookie("jwt", "", {
-        httpOnly: true, // Corrected the typo here
-        expires: new Date(0),
-    });
-
-    console.log("Logged out")
-    res.status(200).json({ message: "Logged out successfully" });
+    try {
+      if (req.user) {
+        await redisClient.del(req.user._id.toString()); // remove refresh token from Redis
+      }
+  
+      res.clearCookie('refreshToken', {
+        httpOnly: true,
+        sameSite: 'Strict',
+        secure: process.env.NODE_ENV === 'production',
+      });
+  
+      console.log("Logged out");
+      res.status(200).json({ message: "Logged out successfully" });
+    } catch (err) {
+      console.error("Logout error:", err);
+      res.status(500).json({ message: "Logout failed" });
+    }
 };
-
+ 
+exports.refreshToken = async (req, res) => {
+    const token = req.cookies?.refreshToken;
+    if (!token) return res.status(401).json({ message: "No refresh token provided." });
+  
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_REFRESH_TOKEN);
+      const storedToken = await redisClient.get(decoded.id);
+  
+      if (!storedToken || storedToken !== token) {
+        return res.status(403).json({ message: "Invalid refresh token." });
+      }
+  
+      const newAccessToken = signAccessToken(decoded.id);
+      return res.status(200).json({ accessToken: newAccessToken });
+    } catch (err) {
+      console.error("Refresh error:", err);
+      return res.status(401).json({ message: "Token refresh failed." });
+    }
+};
+  
 
 
 exports.updatePassword = async (req, res) => {
